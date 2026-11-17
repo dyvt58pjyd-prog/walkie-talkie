@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Tactical Walkie-Talkie | Real-Time RF Radio</title>
+  <link rel="stylesheet" href="css/walkie-talkie.css">
+</head>
+<body>
+
+  <!-- Top Tactical Nav -->
+  <header class="app-header">
+    <div class="brand-section">
+      <div class="brand-icon">📻</div>
+      <div>
+        <div class="brand-title">AEROCOMM RT-8800</div>
+        <div class="brand-badge">TACTICAL UHF/VHF TRANSCEIVER</div>
+      </div>
+    </div>
+    <div class="header-actions">
+      <button class="tactical-btn-sm" id="btnBacklight" title="Cycle LCD Backlight Color">
+        <span>💡</span> LCD Color
+      </button>
+      <button class="tactical-btn-sm" id="btnTestVoice" title="Simulate Tactical Radio Transmission">
+        <span>🎙️</span> Test TX
+      </button>
+      <button class="tactical-btn-sm" id="btnOpenQr" title="Scan QR Code with Phone">
+        <span>📱</span> Mobile Sync
+      </button>
+    </div>
+  </header>
+
+  <!-- Main Workspace -->
+  <main class="main-layout">
+
+    <!-- Left/Center: Realistic Walkie-Talkie Physical Rig -->
+    <section class="radio-stage">
+      <div class="walkie-talkie-housing" id="radioBody">
+
+        <!-- Textured Rubberized Side Grips -->
+        <div class="side-grip left"></div>
+        <div class="side-grip right"></div>
+
+        <!-- Top Hardware (Antenna, Power/Vol Knob, Channel Knob) -->
+        <div class="radio-top-hardware">
+          <!-- Rotary Vol / Power Knob -->
+          <div class="knob-unit" title="Volume & Power Switch (Drag or Scroll)">
+            <div class="knob-dial" id="volKnob"></div>
+            <div class="knob-label">VOL / PWR</div>
+          </div>
+
+          <!-- Rubber Duck Flexible Antenna -->
+          <div class="antenna-assembly">
+            <div class="antenna-tip"></div>
+            <div class="antenna-whip"></div>
+            <div class="antenna-base"></div>
+          </div>
+
+          <!-- Rotary Channel Knob -->
+          <div class="knob-unit" title="Channel Selector Knob (Drag or Scroll)">
+            <div class="knob-dial" id="chanKnob"></div>
+            <div class="knob-label">CH 1-16</div>
+          </div>
+        </div>
+
+        <!-- Faceplate Header -->
+        <div class="radio-face-header">
+          <div class="brand-plate">AEROCOMM</div>
+          <!-- Real-Time Status LEDs -->
+          <div class="led-cluster">
+            <div class="led-wrapper">
+              <div class="led led-tx" id="ledTx"></div>
+              <div class="led-label">TX</div>
+            </div>
+            <div class="led-wrapper">
+              <div class="led led-rx" id="ledRx"></div>
+              <div class="led-label">RX</div>
+            </div>
+            <div class="led-wrapper">
+              <div class="led led-pwr active" id="ledPwr"></div>
+              <div class="led-label">PWR</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- High-Detail Backlit LCD Display -->
+        <div class="lcd-assembly">
+          <div class="lcd-glass theme-amber" id="lcdScreen">
+            <div class="lcd-top-row">
+              <span id="lcdStatus">FM NARROW</span>
+              <span id="lcdSubtone">DCS 67.0 Hz</span>
+              <span id="lcdBattery">7.4V [■■■■□]</span>
+            </div>
+            <div class="lcd-main-row">
+              <span class="lcd-channel-huge" id="lcdChannel">CH 01</span>
+              <span class="lcd-freq-huge" id="lcdFreq">462.5625 MHz</span>
+            </div>
+            <div class="lcd-mid-row">
+              <span id="lcdSmeter">S: ▮▯▯▯▯▯▯▯▯</span>
+              <span id="lcdSql">SQL: AUTO</span>
+            </div>
+            <div class="lcd-canvas-wrapper">
+              <canvas id="lcdCanvas" width="280" height="38"></canvas>
+            </div>
+          </div>
+        </div>
+
+        <!-- Slotted Acoustic Speaker Grille & Condenser Mic Port -->
+        <div class="speaker-grille">
+          <div class="grille-slot"></div>
+          <div class="grille-slot"></div>
+          <div class="grille-slot"></div>
+          <div class="grille-slot"></div>
+          <div class="grille-slot"></div>
+          <div class="mic-port">
+            <div class="mic-hole"></div>
+            <span class="mic-text">MIC</span>
+          </div>
+        </div>
+
+        <!-- Tactile Industrial Keypad -->
+        <div class="keypad-grid">
+          <button class="key-btn" id="btnMoni" title="Monitor - Open Squelch to Hear Static">
+            <span>🔊</span> MONI
+          </button>
+          <button class="key-btn" id="btnScan" title="Scan Channels 1 to 16">
+            <span>📡</span> SCAN
+          </button>
+          <button class="key-btn" id="btnVox" title="Toggle Hands-Free VOX Mode">
+            <span>🗣️</span> VOX
+          </button>
+          <button class="key-btn danger" id="btnAlarm" title="Send Emergency Distress Signal">
+            <span>🚨</span> ALARM
+          </button>
+          <button class="key-btn" id="btnReplay" title="Instant Replay of Last Received Transmission">
+            <span>⏪</span> REPLAY
+          </button>
+          <button class="key-btn" id="btnCw" title="Morse Code CW Key (Hold to transmit 800Hz tone)">
+            <span>⚡</span> CW KEY
+          </button>
+          <button class="key-btn" id="btnCh9" onclick="window.networkEngine?.joinChannel(9)" title="Direct Emergency CH 09">
+            <span>🆘</span> CH 09
+          </button>
+          <button class="key-btn" id="btnRogerTest" onclick="window.audioEngine?.playRogerBeep()" title="Test Roger Beep">
+            <span>🔔</span> BEEP
+          </button>
+        </div>
+
+        <!-- Master PTT Push-To-Talk Button -->
+        <div class="ptt-master-section">
+          <div class="ptt-wrapper">
+            <button class="ptt-main-btn" id="btnPtt">
+              <span>PUSH TO TALK</span>
+              <span class="ptt-btn-hint">HOLD TO TRANSMIT</span>
+            </button>
+            <button class="ptt-lock-toggle" id="btnPttLock" title="Toggle Hands-Free PTT Lock">
+              <span>🔒</span>
+              <span>LOCK</span>
+            </button>
+          </div>
+          <div class="ptt-keyboard-legend">
+            HOLD <span class="key-badge">SPACEBAR</span> OR TAP BUTTON TO TRANSMIT • <span class="key-badge">M</span> FOR CW TONE
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- Right: Tactical Comms HUD Sidebar -->
+    <aside class="hud-sidebar">
+
+      <!-- Navigation Tabs -->
+      <nav class="sidebar-tabs">
+        <button class="sidebar-tab active" data-target="panelChannels">
+          <span>📡</span> CHANNELS
+        </button>
+        <button class="sidebar-tab" data-target="panelSquad">
+          <span>👥</span> SQUAD
+        </button>
+        <button class="sidebar-tab" data-target="panelRig">
+          <span>⚙️</span> RIG SETTINGS
+        </button>
+        <button class="sidebar-tab" data-target="panelTenCodes">
+          <span>📋</span> 10-CODES
+        </button>
+        <button class="sidebar-tab" data-target="panelLogs">
+          <span>📜</span> COMMS LOG
+        </button>
+      </nav>
+
+      <!-- Panel Contents -->
+      <div class="sidebar-content">
+
+        <!-- 1. Channels Panel -->
+        <div class="sidebar-panel active" id="panelChannels">
+          <div class="panel-section-title">
+            <span>16 FRS / GMRS UHF Frequencies</span>
+          </div>
+          <div class="channel-grid" id="channelGrid">
+            <!-- Dynamically populated 16 channels -->
+          </div>
+        </div>
+
+        <!-- 2. Squad / Active Operators Panel -->
+        <div class="sidebar-panel" id="panelSquad">
+          <div class="panel-section-title">
+            <span>Operators On Current Frequency</span>
+          </div>
+          <div id="operatorList">
+            <!-- Dynamically populated operators -->
+          </div>
+        </div>
+
+        <!-- 3. Radio Rig Audio & Callsign Settings -->
+        <div class="sidebar-panel" id="panelRig">
+          <div class="panel-section-title">
+            <span>Operator Identity</span>
+          </div>
+          <div class="setting-group">
+            <label class="setting-label">Tactical Callsign</label>
+            <div class="input-with-button">
+              <input type="text" class="tactical-input" id="inputCallsign" maxlength="16" placeholder="e.g. Viper-1">
+              <button class="tactical-btn-sm" id="btnRandomCallsign">🎲 Random</button>
+            </div>
+          </div>
+
+          <div class="panel-section-title" style="margin-top: 16px;">
+            <span>DSP & Audio FX Processing</span>
+          </div>
+
+          <div class="setting-group">
+            <label class="setting-label">Roger Beep Profile</label>
+            <select class="tactical-select" id="selectRogerBeep">
+              <option value="motorola">Motorola Classic 850Hz Chirp</option>
+              <option value="quindar">NASA Apollo Quindar Tone (2525Hz)</option>
+              <option value="twotone">Tactical Dual-Tone (697Hz / 1209Hz)</option>
+              <option value="chime">Aero Marine Chime</option>
+              <option value="cyber">Digital Cyber Arpeggio</option>
+              <option value="off">Off (Silent Release)</option>
+            </select>
+          </div>
+
+          <div class="setting-group">
+            <label class="setting-label">Bandpass Audio Filter</label>
+            <select class="tactical-select" id="selectFilterMode">
+              <option value="tactical">Tactical UHF (300Hz - 3400Hz Sharp)</option>
+              <option value="vintage">Vintage VHF (300Hz - 2800Hz Warm)</option>
+              <option value="lofi">Lo-Fi Field AM (300Hz - 2200Hz Gritty)</option>
+            </select>
+          </div>
+
+          <div class="setting-group">
+            <label class="setting-label">
+              <span>Analog RF Saturation / Distortion</span>
+            </label>
+            <input type="range" class="tactical-range" id="sliderDistortion" min="0" max="40" value="15">
+          </div>
+
+          <div class="setting-group">
+            <label class="setting-label">
+              <span>VOX Sensitivity (Hands-Free Threshold)</span>
+            </label>
+            <input type="range" class="tactical-range" id="sliderVoxSensitivity" min="10" max="50" value="25">
+          </div>
+
+          <div class="setting-group">
+            <label class="setting-label">
+              <span>Squelch Rotary Knob (Noise Gate)</span>
+            </label>
+            <div class="knob-unit" style="display: inline-block; margin-top: 8px;">
+              <div class="knob-dial" id="squelchKnob"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 4. Tactical 10-Codes & NATO Alphabet -->
+        <div class="sidebar-panel" id="panelTenCodes">
+          <div class="panel-section-title">
+            <span>Tactical 10-Codes (Click to Broadcast)</span>
+          </div>
+          <div class="tactical-chip-grid" id="tenCodeList">
+            <!-- Dynamically populated 10-codes -->
+          </div>
+
+          <div class="panel-section-title" style="margin-top: 18px;">
+            <span>NATO Phonetic Alphabet</span>
+          </div>
+          <div class="nato-grid" id="natoList">
+            <!-- Dynamically populated phonetic alphabet -->
+          </div>
+        </div>
+
+        <!-- 5. Comms Log History -->
+        <div class="sidebar-panel" id="panelLogs">
+          <div class="panel-section-title">
+            <span>Transmission Log Activity</span>
+          </div>
+          <div id="txLogList">
+            <!-- Dynamically populated transmission logs -->
+          </div>
+        </div>
+
+      </div>
+    </aside>
+
+  </main>
+
+  <!-- QR Code Modal (Mobile Phone Wi-Fi Connect) -->
+  <div class="modal-backdrop hidden" id="modalQr">
+    <div class="tactical-modal">
+      <div class="modal-header">
+        <div class="modal-title">📱 Connect Mobile Walkie-Talkie</div>
+        <button class="modal-close-btn" id="btnCloseQr">✕</button>
+      </div>
+      <div class="qr-display">
+        <img class="qr-img" id="qrImage" src="" alt="Mobile QR Code">
+      </div>
+      <div class="qr-meta">
+        <p id="qrIpText">Scan this QR code with your smartphone camera while connected to the same Wi-Fi.</p>
+        <p style="margin-top: 6px;">Or open this address in mobile browser:</p>
+        <a class="qr-url-link" id="qrLink" href="#" target="_blank">Loading...</a>
+        <div style="font-size: 0.7rem; color: #64748b; margin-top: 10px;">
+          Note: Phones require HTTPS to grant microphone access. Tap "Advanced -> Proceed" if a self-signed security notice appears on mobile.
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Cloud & Real-Time Networking Libraries -->
+  <!-- Public WebSocket MQTT client for serverless GitHub Pages / Vercel / Netlify -->
+  <script src="https://unpkg.com/mqtt@5.3.5/dist/mqtt.min.js"></script>
+  <!-- Optional Local Socket.io loader (auto-detects if running on local Node server) -->
+  <script>
+    if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' || window.location.port === '3000') {
+      const s = document.createElement('script');
+      s.src = '/socket.io/socket.io.js';
+      s.onerror = () => {};
+      document.head.appendChild(s);
+    }
+  </script>
+  <script src="js/audio-engine.js"></script>
+  <script src="js/network.js"></script>
+  <script src="js/radio-ui.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
