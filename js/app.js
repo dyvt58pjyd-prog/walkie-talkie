@@ -95,9 +95,12 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   window.networkEngine.onTxEnd = (data) => {
     window.radioUI.onIncomingTransmissionEnd(data);
-    if (data.log) {
-      appendCompletedLog(data.log);
-    }
+    appendCompletedLog(data.log || {
+      callsign: data.callsign,
+      type: 'VOICE',
+      duration: data.duration || '1.2',
+      timestamp: new Date().toLocaleTimeString()
+    });
   };
 
   window.networkEngine.onAudioChunkReceived = (data) => {

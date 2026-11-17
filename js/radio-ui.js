@@ -1,6 +1,10 @@
 /**
  * RADIO UI CONTROLLER
  * Realistic Tactile Handheld Radio Physics & LCD Visuals
+ * - Robust continuous PTT holding with Pointer Events (no dropoffs on drag/touch)
+ * - Live mic volume analysis & real-time LCD visualizer during TX
+ * - Instant S-meter responsiveness
+ * - Seamless VOX hands-free mode
  */
 
 class RadioUI {
@@ -8,17 +12,17 @@ class RadioUI {
     this.powerOn = true;
     this.isTransmitting = false;
     this.isReceiving = false;
+    this.isPttHeld = false;
     this.isPttLocked = false;
     this.isScanning = false;
     this.scanInterval = null;
     this.isVoxActive = false;
-    this.voxThreshold = 35; // Audio level threshold
+    this.voxThreshold = 35;
     this.voxTimer = null;
-    this.currentBacklight = 'amber'; // amber, emerald, cyan, red, mono
-    this.batteryLevel = 94; // %
-    this.signalStrength = 0; // 0 to 9
+    this.currentBacklight = 'amber';
+    this.batteryLevel = 94;
+    this.signalStrength = 0;
 
-    // DOM Elements cache
     this.dom = {};
   }
 
@@ -29,6 +33,7 @@ class RadioUI {
     this.updateLCD();
     this.simulateBatteryDrain();
     this.setupVOXDetection();
+    this.setupPrewarmMic();
   }
 
   cacheElements() {
@@ -43,7 +48,6 @@ class RadioUI {
       lcdStatus: document.getElementById('lcdStatus'),
       lcdBattery: document.getElementById('lcdBattery'),
       lcdCanvas: document.getElementById('lcdCanvas'),
-      lcdVisualizerMode: document.getElementById('lcdVisualizerMode'),
 
       // LEDs
       ledTx: document.getElementById('ledTx'),
@@ -66,35 +70,40 @@ class RadioUI {
       btnCw: document.getElementById('btnCw'),
       btnTestVoice: document.getElementById('btnTestVoice'),
 
-      // Drawers & Overlays
-      drawerChannels: document.getElementById('drawerChannels'),
-      drawerSettings: document.getElementById('drawerSettings'),
-      drawerTenCodes: document.getElementById('drawerTenCodes'),
-      drawerLogs: document.getElementById('drawerLogs'),
-      modalQr: document.getElementById('modalQr'),
-
-      // Lists & Counters
+      // Lists & Containers
       channelGrid: document.getElementById('channelGrid'),
       operatorList: document.getElementById('operatorList'),
-      txLogList: document.getElementById('txLogList'),
-      channelSummaryBar: document.getElementById('channelSummaryBar')
+      txLogList: document.getElementById('txLogList')
     };
   }
 
+  // Pre-initialize microphone on first click anywhere so PTT is instantaneous
+  setupPrewarmMic() {
+    const prewarm = async () => {
+      window.removeEventListener('pointerdown', prewarm);
+      window.removeEventListener('keydown', prewarm);
+      try {
+        await window.audioEngine?.init();
+        await window.audioEngine?.setupMicrophone();
+      } catch (e) {
+        // Will prompt when user presses PTT
+      }
+    };
+    window.addEventListener('pointerdown', prewarm, { once: true });
+    window.addEventListener('keydown', prewarm, { once: true });
+  }
+
   bindEvents() {
-    // Spacebar PTT shortcut
-    let spacePressed = false;
+    // 1. Spacebar PTT Shortcut (Continuous hold until keyup)
     window.addEventListener('keydown', (e) => {
-      // Don't trigger if user is typing in an input
       if (['INPUT', 'TEXTAREA'].includes(e.target.tagName)) return;
 
-      if (e.code === 'Space' && !spacePressed) {
+      if (e.code === 'Space' && !e.repeat && !this.isPttHeld) {
         e.preventDefault();
-        spacePressed = true;
+        this.isPttHeld = true;
         this.startPTT();
       }
 
-      // Quick key for CW tone: 'M' or 'K'
       if (e.code === 'KeyM' && !e.repeat) {
         this.triggerCWKey(true);
       }
@@ -103,9 +112,9 @@ class RadioUI {
     window.addEventListener('keyup', (e) => {
       if (['INPUT', 'TEXTAREA'].includes(e.target.tagName)) return;
 
-      if (e.code === 'Space' && spacePressed) {
+      if (e.code === 'Space' && this.isPttHeld) {
         e.preventDefault();
-        spacePressed = false;
+        this.isPttHeld = false;
         if (!this.isPttLocked) {
           this.stopPTT();
         }
@@ -116,35 +125,62 @@ class RadioUI {
       }
     });
 
-    // PTT Button Mouse & Touch events
+    // Window blur safety: release PTT if window loses focus
+    window.addEventListener('blur', () => {
+      if (this.isPttHeld && !this.isPttLocked) {
+        this.isPttHeld = false;
+        this.stopPTT();
+      }
+    });
+
+    // 2. Heavy-Duty PTT Button: Pointer Events with PointerCapture
+    // Ensures voice continues even if pointer/mouse moves outside the button!
     const ptt = this.dom.btnPtt;
     if (ptt) {
-      const handlePttDown = (e) => {
+      ptt.addEventListener('pointerdown', (e) => {
         e.preventDefault();
-        if (this.isPttLocked) {
-          this.isPttLocked = false;
-          this.dom.btnPttLock.classList.remove('active');
-          this.stopPTT();
-        } else {
-          this.startPTT();
-        }
-      };
+        try {
+          ptt.setPointerCapture(e.pointerId);
+        } catch (err) {}
 
-      const handlePttUp = (e) => {
+        if (this.isPttLocked) {
+          // If locked, clicking again unlocks and ends TX
+          this.isPttLocked = false;
+          this.dom.btnPttLock?.classList.remove('active');
+          this.isPttHeld = false;
+          this.stopPTT();
+          return;
+        }
+
+        this.isPttHeld = true;
+        this.startPTT();
+      });
+
+      ptt.addEventListener('pointerup', (e) => {
         e.preventDefault();
+        try {
+          ptt.releasePointerCapture(e.pointerId);
+        } catch (err) {}
+
+        this.isPttHeld = false;
         if (!this.isPttLocked) {
           this.stopPTT();
         }
-      };
+      });
 
-      ptt.addEventListener('mousedown', handlePttDown);
-      window.addEventListener('mouseup', handlePttUp);
+      ptt.addEventListener('pointercancel', (e) => {
+        e.preventDefault();
+        this.isPttHeld = false;
+        if (!this.isPttLocked) {
+          this.stopPTT();
+        }
+      });
 
-      ptt.addEventListener('touchstart', handlePttDown, { passive: false });
-      window.addEventListener('touchend', handlePttUp, { passive: false });
+      // Prevent mobile long-press context menu
+      ptt.addEventListener('contextmenu', (e) => e.preventDefault());
     }
 
-    // PTT Lock toggle
+    // 3. Hands-Free PTT Lock Button
     if (this.dom.btnPttLock) {
       this.dom.btnPttLock.addEventListener('click', () => {
         this.isPttLocked = !this.isPttLocked;
@@ -152,12 +188,13 @@ class RadioUI {
         if (this.isPttLocked) {
           this.startPTT();
         } else {
+          this.isPttHeld = false;
           this.stopPTT();
         }
       });
     }
 
-    // MONI (Monitor Squelch) Button
+    // 4. MONI (Monitor Squelch) Button
     if (this.dom.btnMoni) {
       const startMoni = (e) => {
         e.preventDefault();
@@ -169,27 +206,25 @@ class RadioUI {
         window.audioEngine?.setStaticNoise(false);
         this.dom.btnMoni.classList.remove('active');
       };
-      this.dom.btnMoni.addEventListener('mousedown', startMoni);
-      window.addEventListener('mouseup', stopMoni);
-      this.dom.btnMoni.addEventListener('touchstart', startMoni, { passive: false });
-      window.addEventListener('touchend', stopMoni, { passive: false });
+      this.dom.btnMoni.addEventListener('pointerdown', startMoni);
+      window.addEventListener('pointerup', stopMoni);
     }
 
-    // SCAN Button
+    // 5. SCAN Button
     if (this.dom.btnScan) {
       this.dom.btnScan.addEventListener('click', () => {
         this.toggleChannelScan();
       });
     }
 
-    // ALARM Button (Emergency siren)
+    // 6. ALARM Button
     if (this.dom.btnAlarm) {
       this.dom.btnAlarm.addEventListener('click', () => {
         this.toggleEmergencyAlarm();
       });
     }
 
-    // VOX Button
+    // 7. VOX Button
     if (this.dom.btnVox) {
       this.dom.btnVox.addEventListener('click', () => {
         this.isVoxActive = !this.isVoxActive;
@@ -198,37 +233,34 @@ class RadioUI {
       });
     }
 
-    // REPLAY Button
+    // 8. REPLAY Button
     if (this.dom.btnReplay) {
       this.dom.btnReplay.addEventListener('click', () => {
         this.replayLastTransmission();
       });
     }
 
-    // CW Key Button (Morse code key)
+    // 9. CW Key Button (Morse Code)
     if (this.dom.btnCw) {
-      const handleCwDown = (e) => {
+      this.dom.btnCw.addEventListener('pointerdown', (e) => {
         e.preventDefault();
         this.triggerCWKey(true);
-      };
-      const handleCwUp = (e) => {
-        e.preventDefault();
-        this.triggerCWKey(false);
-      };
-      this.dom.btnCw.addEventListener('mousedown', handleCwDown);
-      window.addEventListener('mouseup', handleCwUp);
-      this.dom.btnCw.addEventListener('touchstart', handleCwDown, { passive: false });
-      window.addEventListener('touchend', handleCwUp, { passive: false });
+      });
+      window.addEventListener('pointerup', () => {
+        if (this.dom.btnCw?.classList.contains('pressed')) {
+          this.triggerCWKey(false);
+        }
+      });
     }
 
-    // TEST VOICE Button
+    // 10. TEST VOICE Button
     if (this.dom.btnTestVoice) {
       this.dom.btnTestVoice.addEventListener('click', () => {
         this.runTestVoiceTransmission();
       });
     }
 
-    // Volume & Channel Knobs
+    // 11. Rotary Knobs
     this.setupRotaryKnob(this.dom.volKnob, 0, 100, 85, (val) => {
       if (val === 0) {
         this.setPower(false);
@@ -254,7 +286,7 @@ class RadioUI {
       this.updateLCD();
     });
 
-    // Backlight Switcher
+    // 12. LCD Backlight switcher
     const backlightBtn = document.getElementById('btnBacklight');
     if (backlightBtn) {
       backlightBtn.addEventListener('click', () => {
@@ -263,7 +295,7 @@ class RadioUI {
     }
   }
 
-  // Interactive Rotary Knob Helper with drag & mousewheel physics
+  // Rotary Knob Drag & Wheel Helper
   setupRotaryKnob(element, min, max, initialVal, onChange) {
     if (!element) return;
     let currentVal = initialVal;
@@ -272,33 +304,33 @@ class RadioUI {
 
     const updateKnobRotation = (val) => {
       const percent = (val - min) / (max - min);
-      const angle = -135 + percent * 270; // -135 deg to +135 deg
+      const angle = -135 + percent * 270;
       element.style.transform = `rotate(${angle}deg)`;
     };
 
     updateKnobRotation(initialVal);
 
-    element.addEventListener('mousedown', (e) => {
+    element.addEventListener('pointerdown', (e) => {
       isDragging = true;
       startY = e.clientY;
+      element.setPointerCapture(e.pointerId);
       e.preventDefault();
     });
 
-    window.addEventListener('mousemove', (e) => {
+    window.addEventListener('pointermove', (e) => {
       if (!isDragging) return;
       const deltaY = startY - e.clientY;
       startY = e.clientY;
-      const step = (max - min) / 80;
+      const step = (max - min) / 75;
       currentVal = Math.max(min, Math.min(max, currentVal + deltaY * step));
       updateKnobRotation(currentVal);
       if (onChange) onChange(currentVal);
     });
 
-    window.addEventListener('mouseup', () => {
+    window.addEventListener('pointerup', () => {
       isDragging = false;
     });
 
-    // Mouse wheel support
     element.addEventListener('wheel', (e) => {
       e.preventDefault();
       const step = (max - min) / 25;
@@ -311,15 +343,10 @@ class RadioUI {
 
   setPower(on) {
     this.powerOn = on;
-    if (this.dom.ledPwr) {
-      this.dom.ledPwr.classList.toggle('active', on);
-    }
-    if (this.dom.radioBody) {
-      this.dom.radioBody.classList.toggle('powered-off', !on);
-    }
-    if (this.dom.lcdScreen) {
-      this.dom.lcdScreen.classList.toggle('powered-off', !on);
-    }
+    if (this.dom.ledPwr) this.dom.ledPwr.classList.toggle('active', on);
+    if (this.dom.radioBody) this.dom.radioBody.classList.toggle('powered-off', !on);
+    if (this.dom.lcdScreen) this.dom.lcdScreen.classList.toggle('powered-off', !on);
+
     if (on) {
       window.audioEngine?.playSquelchBurst(true);
     } else {
@@ -328,32 +355,33 @@ class RadioUI {
     }
   }
 
-  // Push-To-Talk Start
+  // Push-To-Talk Start (Continuous live audio)
   async startPTT() {
     if (!this.powerOn || this.isTransmitting) return;
-    this.isTransmitting = true;
 
-    // Init audio engine on user interaction
-    await window.audioEngine?.init();
-
-    // Check if mic stream is ready
-    let stream = null;
-    try {
-      stream = await window.audioEngine?.setupMicrophone();
-    } catch (e) {
-      console.warn('Microphone not available, using simulated RF carrier:', e);
-    }
-
-    // Play hardware tactile mic switch click & key-up burst
+    // Instant tactile feedback
     window.audioEngine?.playMicClick(true);
-    window.audioEngine?.playSquelchBurst(true);
-
-    // Light up Red TX LED & active PTT styling
     if (this.dom.ledTx) this.dom.ledTx.classList.add('active');
     if (this.dom.btnPtt) this.dom.btnPtt.classList.add('pressed');
+    this.isTransmitting = true;
 
-    // Inform Network Engine
-    window.networkEngine?.startTransmission(stream);
+    try {
+      await window.audioEngine?.init();
+      await window.audioEngine?.setupMicrophone();
+    } catch (e) {
+      console.warn('Microphone not available:', e.message);
+    }
+
+    // Safety check: if user released button while mic was preparing, cancel
+    if (!this.isPttHeld && !this.isPttLocked) {
+      this.stopPTT();
+      return;
+    }
+
+    window.audioEngine?.playSquelchBurst(true);
+
+    // Start continuous live PCM streaming
+    window.networkEngine?.startTransmission();
 
     this.updateLCD();
   }
@@ -363,17 +391,13 @@ class RadioUI {
     if (!this.isTransmitting) return;
     this.isTransmitting = false;
 
-    // Turn off TX LED & unpress button
     if (this.dom.ledTx) this.dom.ledTx.classList.remove('active');
     if (this.dom.btnPtt) this.dom.btnPtt.classList.remove('pressed');
 
-    // Play hardware release click & Roger Beep sound
     window.audioEngine?.playMicClick(false);
     window.audioEngine?.playRogerBeep();
 
-    // Inform Network Engine
-    const stream = window.audioEngine?.micStream;
-    window.networkEngine?.stopTransmission(stream, window.audioEngine?.settings.rogerBeep);
+    window.networkEngine?.stopTransmission(window.audioEngine?.settings.rogerBeep);
 
     this.updateLCD();
   }
@@ -383,10 +407,8 @@ class RadioUI {
     this.isReceiving = true;
     if (this.dom.ledRx) this.dom.ledRx.classList.add('active');
 
-    // Squelch burst on receiving carrier
     window.audioEngine?.playSquelchBurst(true);
 
-    // If collision (2 people transmitting at same time)
     if (data.isCollision) {
       window.audioEngine?.setHeterodyneCollision(true);
     }
@@ -400,17 +422,13 @@ class RadioUI {
     this.isReceiving = false;
     if (this.dom.ledRx) this.dom.ledRx.classList.remove('active');
 
-    // Turn off heterodyne collision sound
     window.audioEngine?.setHeterodyneCollision(false);
-
-    // Play Roger Beep + Squelch tail of incoming transmission
     window.audioEngine?.playRogerBeep(data.rogerBeepType || 'motorola');
 
     this.signalStrength = 0;
     this.updateLCD();
   }
 
-  // Emergency Siren
   toggleEmergencyAlarm() {
     const isNowActive = !this.isAlarmActive;
     this.isAlarmActive = isNowActive;
@@ -419,15 +437,11 @@ class RadioUI {
     window.audioEngine?.toggleEmergencyAlarm(isNowActive);
     window.networkEngine?.sendEmergencyAlert(isNowActive);
 
-    if (isNowActive) {
-      // Auto-switch to Emergency Channel 9 if not already there
-      if (window.networkEngine?.currentChannel !== 9) {
-        window.networkEngine?.joinChannel(9);
-      }
+    if (isNowActive && window.networkEngine?.currentChannel !== 9) {
+      window.networkEngine?.joinChannel(9);
     }
   }
 
-  // CW Morse Key
   triggerCWKey(pressed) {
     if (!this.powerOn) return;
     window.audioEngine?.setCWKey(pressed, 800);
@@ -440,7 +454,6 @@ class RadioUI {
     }
   }
 
-  // Automated Channel Scanning
   toggleChannelScan() {
     this.isScanning = !this.isScanning;
     this.dom.btnScan?.classList.toggle('active', this.isScanning);
@@ -452,12 +465,9 @@ class RadioUI {
       return;
     }
 
-    // Step through channels every 700ms
     let scanChannel = window.networkEngine?.currentChannel || 1;
     this.scanInterval = setInterval(() => {
       scanChannel = (scanChannel % 16) + 1;
-
-      // Check if this channel has active transmission or users
       const summary = window.networkEngine?.channelSummary?.[scanChannel];
       const hasActivity = summary && (summary.activeTx || summary.count > 0);
 
@@ -465,8 +475,6 @@ class RadioUI {
       window.audioEngine?.playMicClick(true);
 
       if (hasActivity && summary.activeTx) {
-        // Found active broadcast! Pause scan
-        console.log(`📡 Scanner caught activity on CH ${scanChannel}!`);
         this.toggleChannelScan();
       }
     }, 700);
@@ -474,14 +482,12 @@ class RadioUI {
     this.updateLCD();
   }
 
-  // VOX (Voice-Activated Transmission) detection loop
   setupVOXDetection() {
     const checkVoiceLevel = () => {
-      if (this.isVoxActive && this.powerOn && window.audioEngine?.analyser) {
-        const data = new Uint8Array(window.audioEngine.analyser.frequencyBinCount);
-        window.audioEngine.analyser.getByteFrequencyData(data);
+      if (this.isVoxActive && this.powerOn && window.audioEngine?.micAnalyser) {
+        const data = new Uint8Array(window.audioEngine.micAnalyser.frequencyBinCount);
+        window.audioEngine.micAnalyser.getByteFrequencyData(data);
 
-        // Calculate average speech frequency energy (300Hz - 2500Hz)
         let sum = 0;
         const count = Math.min(data.length, 30);
         for (let i = 2; i < count; i++) {
@@ -494,12 +500,11 @@ class RadioUI {
             this.startPTT();
           }
           if (this.voxTimer) clearTimeout(this.voxTimer);
-          // Hold transmission for 600ms of silence
           this.voxTimer = setTimeout(() => {
-            if (this.isTransmitting && this.isVoxActive) {
+            if (this.isTransmitting && this.isVoxActive && !this.isPttHeld) {
               this.stopPTT();
             }
-          }, 600);
+          }, 650);
         }
       }
       requestAnimationFrame(checkVoiceLevel);
@@ -507,29 +512,13 @@ class RadioUI {
     requestAnimationFrame(checkVoiceLevel);
   }
 
-  // Replay Last Received Transmission
   replayLastTransmission() {
-    const last = window.networkEngine?.lastReceivedTransmission;
-    if (!last || !last.audioUrl) {
-      // Play a quick alert if nothing recorded yet
-      window.audioEngine?.playRogerBeep('twotone');
-      alert('No transmission recorded yet. Wait for someone to talk on the channel!');
-      return;
+    const ok = window.audioEngine?.replayLastTransmission();
+    if (!ok) {
+      alert('No transmission recorded yet on this frequency.');
     }
-
-    // Play with radio burst and sound
-    window.audioEngine?.playMicClick(true);
-    window.audioEngine?.playSquelchBurst(true);
-
-    const audio = new Audio(last.audioUrl);
-    audio.play();
-
-    audio.onended = () => {
-      window.audioEngine?.playRogerBeep('motorola');
-    };
   }
 
-  // Built-in Tactical Voice Test
   runTestVoiceTransmission() {
     const testPhrases = [
       "Bravo Six, checking in on primary frequency, all stations copy, over.",
@@ -548,7 +537,6 @@ class RadioUI {
     );
   }
 
-  // Cycle LCD Backlight Color (Amber, Emerald Green, Cyan, Red, Monochrome)
   cycleBacklightColor() {
     const colors = ['amber', 'emerald', 'cyan', 'red', 'mono'];
     const currentIdx = colors.indexOf(this.currentBacklight);
@@ -560,7 +548,6 @@ class RadioUI {
     }
   }
 
-  // Update dynamic LCD display
   updateLCD(incomingCallsign = null) {
     if (!this.powerOn) return;
 
@@ -600,9 +587,15 @@ class RadioUI {
       this.dom.lcdStatus.textContent = statusText;
     }
 
-    // Dynamic S-Meter (Signal Strength)
+    // Dynamic S-Meter
     if (this.dom.lcdSmeter) {
-      const bars = this.isTransmitting ? 9 : (this.isReceiving ? 8 : (this.signalStrength || 1));
+      let bars = 1;
+      if (this.isTransmitting) {
+        const micVal = window.audioEngine?.currentMicLevel || 0;
+        bars = Math.min(9, Math.max(3, Math.round(micVal * 25)));
+      } else if (this.isReceiving) {
+        bars = 8;
+      }
       let smeterStr = 'S: ';
       for (let i = 1; i <= 9; i++) {
         smeterStr += i <= bars ? '▮' : '▯';
@@ -610,7 +603,6 @@ class RadioUI {
       this.dom.lcdSmeter.textContent = smeterStr;
     }
 
-    // Battery level
     if (this.dom.lcdBattery) {
       const bars = Math.ceil(this.batteryLevel / 20);
       let batStr = `7.4V [${'■'.repeat(bars)}${'□'.repeat(5 - bars)}]`;
@@ -618,12 +610,11 @@ class RadioUI {
     }
   }
 
-  // Subtle realistic battery fluctuation
   simulateBatteryDrain() {
     setInterval(() => {
       if (this.powerOn && this.batteryLevel > 5) {
         if (this.isTransmitting) {
-          this.batteryLevel -= 0.15; // Higher drain during TX
+          this.batteryLevel -= 0.15;
         } else {
           this.batteryLevel -= 0.01;
         }
@@ -659,21 +650,21 @@ class RadioUI {
         ctx.stroke();
       }
 
-      if (window.audioEngine && window.audioEngine.analyser && (this.isTransmitting || this.isReceiving || window.audioEngine.isMonitorActive)) {
-        const bufferLength = window.audioEngine.analyser.frequencyBinCount;
-        const dataArray = new Uint8Array(bufferLength);
-        window.audioEngine.analyser.getByteFrequencyData(dataArray);
+      // Check for audio activity (TX or RX or Monitor mode)
+      const isActive = this.isTransmitting || this.isReceiving || window.audioEngine?.isMonitorActive;
 
-        // Draw segmented LCD matrix bars
+      if (isActive && window.audioEngine) {
+        const dataArray = new Uint8Array(32);
+        window.audioEngine.getFrequencyData(dataArray);
+
         const numBars = 16;
         const barWidth = Math.floor(width / numBars) - 2;
 
         for (let i = 0; i < numBars; i++) {
-          const val = dataArray[i * 2] || 0;
+          const val = dataArray[i * 2] || (this.isTransmitting ? Math.random() * 80 * window.audioEngine.currentMicLevel : 0);
           const barHeight = Math.floor((val / 255) * height);
           const x = i * (barWidth + 2);
 
-          // Draw segmented blocks
           const segmentSize = 3;
           const numSegments = Math.floor(barHeight / (segmentSize + 1));
 
@@ -682,6 +673,17 @@ class RadioUI {
             ctx.fillStyle = 'rgba(20, 25, 20, 0.85)';
             ctx.fillRect(x, y, barWidth, segmentSize);
           }
+        }
+
+        // Update S-Meter while transmitting to reflect live speech energy
+        if (this.isTransmitting && this.dom.lcdSmeter) {
+          const micEnergy = window.audioEngine.currentMicLevel || 0;
+          const bars = Math.min(9, Math.max(2, Math.round(micEnergy * 30)));
+          let smeterStr = 'S: ';
+          for (let i = 1; i <= 9; i++) {
+            smeterStr += i <= bars ? '▮' : '▯';
+          }
+          this.dom.lcdSmeter.textContent = smeterStr;
         }
       } else {
         // Idle heartbeat blip

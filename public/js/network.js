@@ -2,15 +2,10 @@
  * HYBRID SERVERLESS & CLOUD NETWORK ENGINE
  * Compatible with GitHub Pages, Vercel, Netlify, and Local Node Server!
  *
- * Networking Tiers:
- * 1. Cloud MQTT Broadcast (Free public WebSocket MQTT broker: EMQX / HiveMQ)
- *    - Real-time worldwide push-to-talk events, audio slices, and presence
- * 2. Browser BroadcastChannel API
- *    - Instant zero-latency cross-tab synchronization on same device (works offline)
- * 3. WebRTC Peer Connection
- *    - Direct peer-to-peer audio streaming
- * 4. Local Socket.io (if running node server.js)
- *    - Automatic fallback/dual support
+ * Continuous Low-Latency PCM Audio Streaming Architecture:
+ * 1. BroadcastChannel (Zero-latency binary ArrayBuffer streaming across tabs/windows)
+ * 2. Cloud MQTT WebSocket Broker (Base64-encoded PCM packets across internet devices)
+ * 3. Local Socket.io (if running via node server.js)
  */
 
 const DEFAULT_CHANNELS = {
@@ -32,6 +27,27 @@ const DEFAULT_CHANNELS = {
   16: { freq: '462.5750', label: 'CH 16 - Repeater Uplink', ctcss: '114.8 Hz' }
 };
 
+// Fast binary buffer conversion
+function arrayBufferToBase64(buffer) {
+  let binary = '';
+  const bytes = new Uint8Array(buffer);
+  const len = bytes.byteLength;
+  for (let i = 0; i < len; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return window.btoa(binary);
+}
+
+function base64ToArrayBuffer(base64) {
+  const binary_string = window.atob(base64);
+  const len = binary_string.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    bytes[i] = binary_string.charCodeAt(i);
+  }
+  return bytes.buffer;
+}
+
 class NetworkEngine {
   constructor() {
     this.clientId = `radio_${Math.random().toString(36).substring(2, 9)}`;
@@ -40,9 +56,10 @@ class NetworkEngine {
     this.channels = DEFAULT_CHANNELS;
     this.channelSummary = {};
 
-    // Active operators in current channel: id -> { id, callsign, battery, tx, lastSeen }
     this.operatorsMap = new Map();
     this.activeTxSender = null;
+    this.txPacketSequence = 0;
+    this.txStartTime = 0;
 
     // Local Cross-Tab Broadcast Channel
     this.broadcastChannel = null;
@@ -51,30 +68,19 @@ class NetworkEngine {
     this.mqttClient = null;
     this.isMqttConnected = false;
 
-    // Optional Socket.io client (if on local server)
+    // Optional Socket.io
     this.socket = null;
-
-    // MediaRecorder for audio slices
-    this.mediaRecorder = null;
-    this.audioChunksQueue = [];
-    this.isRecording = false;
-
-    // Transmission replay buffer
-    this.lastReceivedTransmission = null;
-    this.incomingAudioQueue = [];
 
     // Callbacks
     this.onChannelChange = null;
     this.onUsersUpdate = null;
     this.onTxStart = null;
     this.onTxEnd = null;
-    this.onAudioChunkReceived = null;
     this.onEmergencyAlert = null;
     this.onCWKey = null;
     this.onTacticalMsg = null;
     this.onSummaryUpdate = null;
 
-    // Setup channel summary baseline
     this.initChannelSummary();
   }
 
@@ -89,27 +95,18 @@ class NetworkEngine {
   }
 
   init() {
-    console.log(`📡 Initializing Network Engine for client [${this.clientId}] (${this.callsign})...`);
+    console.log(`📡 Initializing Network Engine [${this.clientId}] (${this.callsign})...`);
 
-    // 1. Setup local cross-tab BroadcastChannel
     this.setupBroadcastChannel();
-
-    // 2. Setup Cloud Serverless MQTT Client
     this.setupCloudMQTT();
-
-    // 3. Setup optional Socket.IO if available
     this.setupSocketIO();
-
-    // 4. Start periodic presence heartbeat & prune stale peers
     this.startPresenceHeartbeat();
 
-    // Trigger initial channel view
     setTimeout(() => {
       this.notifyChannelChange();
     }, 150);
   }
 
-  // Tier 1: Local Cross-Tab BroadcastChannel
   setupBroadcastChannel() {
     if ('BroadcastChannel' in window) {
       try {
@@ -117,29 +114,22 @@ class NetworkEngine {
         this.broadcastChannel.onmessage = (event) => {
           this.handleInboundNetworkMessage(event.data);
         };
-        console.log('✅ Local Cross-Tab BroadcastChannel active');
+        console.log('✅ BroadcastChannel active');
       } catch (e) {
         console.warn('BroadcastChannel error:', e);
       }
     }
   }
 
-  // Tier 2: Cloud Serverless MQTT over WebSocket
   setupCloudMQTT() {
     if (typeof mqtt === 'undefined') {
-      console.warn('Cloud MQTT library not loaded, relying on cross-tab BroadcastChannel');
+      console.warn('MQTT library not loaded');
       return;
     }
 
-    // Public reliable brokers: EMQX, HiveMQ
-    const brokerUrls = [
-      'wss://broker.emqx.io:8084/mqtt',
-      'wss://broker.hivemq.com:8884/mqtt'
-    ];
-    const brokerUrl = brokerUrls[0];
+    const brokerUrl = 'wss://broker.emqx.io:8084/mqtt';
 
     try {
-      console.log(`Connecting to Cloud MQTT Broker: ${brokerUrl}`);
       this.mqttClient = mqtt.connect(brokerUrl, {
         clientId: `aerocomm_${this.clientId}`,
         clean: true,
@@ -158,32 +148,30 @@ class NetworkEngine {
         try {
           const payload = JSON.parse(message.toString());
           if (payload.senderId !== this.clientId) {
+            // If message contains Base64 PCM, decode back to ArrayBuffer
+            if (payload.pcmBase64) {
+              payload.pcmBuffer = base64ToArrayBuffer(payload.pcmBase64);
+            }
             this.handleInboundNetworkMessage(payload);
           }
         } catch (e) {
-          console.warn('Error parsing incoming cloud message:', e);
+          console.warn('Error parsing incoming message:', e);
         }
       });
 
       this.mqttClient.on('error', (err) => {
-        console.warn('MQTT Cloud warning:', err.message);
+        console.warn('MQTT warning:', err.message);
       });
     } catch (err) {
-      console.warn('Could not initialize Cloud MQTT:', err);
+      console.warn('Cloud MQTT setup notice:', err);
     }
   }
 
-  // Tier 3: Optional local Socket.io if running on Node server
   setupSocketIO() {
     if (typeof io !== 'undefined') {
       try {
-        this.socket = io({
-          reconnectionAttempts: 3,
-          timeout: 4000
-        });
-
+        this.socket = io({ reconnectionAttempts: 2, timeout: 3000 });
         this.socket.on('connect', () => {
-          console.log('🔌 Connected to local Node Socket.io server!');
           this.socket.emit('join-channel', {
             channel: this.currentChannel,
             callsign: this.callsign
@@ -196,75 +184,64 @@ class NetworkEngine {
           }
         });
 
-        this.socket.on('audio-chunk', (data) => {
-          if (data.senderId !== this.clientId) {
-            this.handleInboundNetworkMessage({ type: 'audio-chunk', ...data });
-          }
-        });
-
         this.socket.on('tx-ended', (data) => {
           if (data.senderId !== this.clientId) {
             this.handleInboundNetworkMessage({ type: 'tx-end', ...data });
           }
         });
-      } catch (e) {
-        console.log('Local socket server skipped (running static cloud mode)');
-      }
+      } catch (e) {}
     }
   }
 
-  // Subscribe to MQTT topic for current channel
   subscribeToChannel(channelNum) {
     if (!this.mqttClient || !this.isMqttConnected) return;
-    const topic = `aerocomm/v2/channel/${channelNum}/#`;
-    this.mqttClient.subscribe(topic, { qos: 0 }, (err) => {
-      if (!err) {
-        console.log(`Subscribed to cloud channel topic: ${topic}`);
-      }
-    });
+    const topic = `aerocomm/v3/channel/${channelNum}/#`;
+    this.mqttClient.subscribe(topic, { qos: 0 });
   }
 
   unsubscribeFromChannel(channelNum) {
     if (!this.mqttClient || !this.isMqttConnected) return;
-    const topic = `aerocomm/v2/channel/${channelNum}/#`;
+    const topic = `aerocomm/v3/channel/${channelNum}/#`;
     this.mqttClient.unsubscribe(topic);
   }
 
-  // Outbound message dispatcher (sends to BroadcastChannel + Cloud MQTT + Socket.IO)
   broadcastNetworkMessage(msg) {
     msg.senderId = this.clientId;
     msg.callsign = this.callsign;
     msg.channel = this.currentChannel;
     msg.timestamp = Date.now();
 
-    // 1. Send via local cross-tab BroadcastChannel
+    // 1. Local BroadcastChannel: Send directly with binary ArrayBuffer
     if (this.broadcastChannel) {
       try {
         this.broadcastChannel.postMessage(msg);
       } catch (e) {}
     }
 
-    // 2. Send via Cloud MQTT
+    // 2. Cloud MQTT: Encode ArrayBuffer to base64 for string JSON
     if (this.mqttClient && this.isMqttConnected) {
       try {
-        const topic = `aerocomm/v2/channel/${this.currentChannel}/${msg.type}`;
-        this.mqttClient.publish(topic, JSON.stringify(msg));
+        const topic = `aerocomm/v3/channel/${this.currentChannel}/${msg.type}`;
+        const mqttPayload = { ...msg };
+        if (msg.pcmBuffer) {
+          mqttPayload.pcmBase64 = arrayBufferToBase64(msg.pcmBuffer);
+          delete mqttPayload.pcmBuffer; // Don't JSON.stringify raw buffer
+        }
+        this.mqttClient.publish(topic, JSON.stringify(mqttPayload));
       } catch (e) {}
     }
 
-    // 3. Send via Socket.io if active
+    // 3. Local socket if active
     if (this.socket && this.socket.connected) {
       if (msg.type === 'tx-start') this.socket.emit('tx-start');
       else if (msg.type === 'tx-end') this.socket.emit('tx-end', { duration: msg.duration, rogerBeepType: msg.rogerBeepType });
-      else if (msg.type === 'audio-chunk') this.socket.emit('audio-chunk', msg);
     }
   }
 
-  // Inbound unified message handler
+  // Handle Inbound Message
   handleInboundNetworkMessage(msg) {
     if (!msg || msg.senderId === this.clientId) return;
 
-    // Filter by channel
     if (msg.channel && msg.channel !== this.currentChannel && msg.type !== 'presence-ping') {
       return;
     }
@@ -276,35 +253,21 @@ class NetworkEngine {
 
       case 'tx-start':
         this.activeTxSender = msg.senderId;
-        this.incomingAudioQueue = [];
+        window.audioEngine?.resetIncomingAudioStream();
         if (this.onTxStart) this.onTxStart(msg);
         break;
 
-      case 'audio-chunk':
-        if (msg.audio) {
-          this.incomingAudioQueue.push(msg.audio);
-          if (this.onAudioChunkReceived) this.onAudioChunkReceived(msg);
+      case 'audio-pcm':
+        // Feed continuous PCM audio buffer directly into audio engine
+        const buffer = msg.pcmBuffer;
+        if (buffer) {
+          window.audioEngine?.playIncomingPCMPacket(buffer);
         }
         break;
 
       case 'tx-end':
         this.activeTxSender = null;
-        if (this.incomingAudioQueue.length > 0) {
-          try {
-            const blob = new Blob(this.incomingAudioQueue, { type: 'audio/webm' });
-            this.lastReceivedTransmission = {
-              callsign: msg.callsign,
-              blob,
-              audioUrl: URL.createObjectURL(blob),
-              duration: msg.duration,
-              timestamp: new Date().toLocaleTimeString()
-            };
-            const rxAudio = new Audio(this.lastReceivedTransmission.audioUrl);
-            rxAudio.play().catch(e => console.log('Audio playback notice:', e));
-          } catch (e) {
-            console.warn('Replay buffer save error:', e);
-          }
-        }
+        window.audioEngine?.finalizeIncomingAudioStream();
         if (this.onTxEnd) this.onTxEnd(msg);
         break;
 
@@ -333,12 +296,8 @@ class NetworkEngine {
       this.subscribeToChannel(this.currentChannel);
     }
 
-    // Reset channel operator map
     this.operatorsMap.clear();
-
-    // Broadcast presence on new channel
     this.broadcastPresence();
-
     this.notifyChannelChange();
 
     if (this.socket && this.socket.connected) {
@@ -369,7 +328,6 @@ class NetworkEngine {
     this.broadcastPresence();
   }
 
-  // Periodic Presence Heartbeat
   startPresenceHeartbeat() {
     setInterval(() => {
       this.broadcastPresence();
@@ -399,7 +357,6 @@ class NetworkEngine {
       }
     }
 
-    // Update channel summary count
     if (msg.channel && this.channelSummary[msg.channel]) {
       this.channelSummary[msg.channel].count = Math.max(1, (this.channelSummary[msg.channel].count || 0));
     }
@@ -421,7 +378,6 @@ class NetworkEngine {
 
   getUsersList() {
     const list = Array.from(this.operatorsMap.values());
-    // Include self
     list.unshift({
       id: this.clientId,
       callsign: this.callsign,
@@ -432,58 +388,40 @@ class NetworkEngine {
     return list;
   }
 
-  // Push-To-Talk Start
-  startTransmission(stream) {
+  // Continuous PTT Transmission Start
+  startTransmission() {
+    this.txStartTime = Date.now();
+    this.txPacketSequence = 0;
+
+    // Send TX START notification
     this.broadcastNetworkMessage({
       type: 'tx-start'
     });
 
-    // Start audio slice recording
-    if (stream) {
-      try {
-        const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-          ? 'audio/webm;codecs=opus'
-          : (MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/mp4');
-
-        this.mediaRecorder = new MediaRecorder(stream, { mimeType, audioBitsPerSecond: 32000 });
-        this.audioChunksQueue = [];
-
-        this.mediaRecorder.ondataavailable = (e) => {
-          if (e.data && e.data.size > 0) {
-            this.audioChunksQueue.push(e.data);
-            this.broadcastNetworkMessage({
-              type: 'audio-chunk',
-              audio: e.data,
-              sequence: this.audioChunksQueue.length
-            });
-          }
-        };
-
-        this.mediaRecorder.start(120);
-        this.isRecording = true;
-      } catch (err) {
-        console.warn('Audio streaming notice:', err);
-      }
-    }
+    // Start continuous audio capture on audio engine
+    window.audioEngine?.startContinuousAudioCapture((pcmArrayBuffer) => {
+      this.txPacketSequence++;
+      this.broadcastNetworkMessage({
+        type: 'audio-pcm',
+        seq: this.txPacketSequence,
+        pcmBuffer: pcmArrayBuffer
+      });
+    });
   }
 
-  // Push-To-Talk Stop
-  stopTransmission(stream, rogerBeepType = 'motorola') {
-    if (this.mediaRecorder && this.isRecording) {
-      try {
-        this.mediaRecorder.stop();
-      } catch (e) {}
-      this.isRecording = false;
-    }
+  // PTT Transmission Stop
+  stopTransmission(rogerBeepType = 'motorola') {
+    window.audioEngine?.stopContinuousAudioCapture();
+
+    const duration = this.txStartTime ? ((Date.now() - this.txStartTime) / 1000).toFixed(1) : '1.0';
 
     this.broadcastNetworkMessage({
       type: 'tx-end',
-      duration: '1.2',
+      duration,
       rogerBeepType: rogerBeepType || 'motorola'
     });
   }
 
-  // Emergency Siren Alert
   sendEmergencyAlert(active) {
     this.broadcastNetworkMessage({
       type: 'emergency-alert',
@@ -491,7 +429,6 @@ class NetworkEngine {
     });
   }
 
-  // Morse CW Tone
   sendCWKey(pressed, freq = 800) {
     this.broadcastNetworkMessage({
       type: 'cw-key',
@@ -500,7 +437,6 @@ class NetworkEngine {
     });
   }
 
-  // Tactical 10-Code
   sendTacticalMsg(code, meaning) {
     this.broadcastNetworkMessage({
       type: 'tactical-msg',
